@@ -141,3 +141,4 @@ C:\Users\YASKHAND\Documents\LMS\lmsapp\obj\Debug\net8.0\refint\lmsapp.dll
 C:\Users\YASKHAND\Documents\LMS\lmsapp\obj\Debug\net8.0\lmsapp.pdb
 C:\Users\YASKHAND\Documents\LMS\lmsapp\obj\Debug\net8.0\lmsapp.genruntimeconfig.cache
 C:\Users\YASKHAND\Documents\LMS\lmsapp\obj\Debug\net8.0\ref\lmsapp.dll
+C:\Users\YASKHAND\Documents\LMS\lmsapp\obj\Debug\net8.0\lmsapp.sourcelink.json

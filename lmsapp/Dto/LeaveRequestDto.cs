@@ -15,5 +15,6 @@ namespace lmsapp.Dto
     public DateTime EndDate { get; set; }
     public string Reason { get; set; }
     public LeaveStatus Status { get; set; }
+    
     }
 }

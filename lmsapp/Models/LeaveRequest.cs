@@ -12,4 +12,9 @@ public class LeaveRequest
     public DateTime DateRequested { get; set; }
     public DateTime? DateActioned { get; set; }
     public string ManagerId { get; set; } // Use string for text data
+
+
+    public bool IsValidRequest(){
+        return StartDate >= DateTime.Now && EndDate >= StartDate;
+    }
 }
