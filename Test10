@@ -1,0 +1,208 @@
+using lmsapp.Dto;
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
+
+namespace lmsapp.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class LeaveRequestController : ControllerBase
+    {
+        private readonly ILeaveRequestRepository _leaveRequestRepo;
+        private readonly ILeaveBalanceRepository _leaveBalanceRepo;
+
+        public LeaveRequestController(ILeaveRequestRepository leaveRequestRepo, ILeaveBalanceRepository leaveBalanceRepo)
+        {
+            _leaveRequestRepo = leaveRequestRepo;
+            _leaveBalanceRepo = leaveBalanceRepo;
+        }
+
+        [HttpPost("apply")]
+        [Authorize(Roles = "Employee")]
+        public async Task<IActionResult> ApplyForLeave([FromBody] CreateLeaveRequestDto requestDto)
+        {
+            var employeeId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+            if (string.IsNullOrEmpty(employeeId))
+                return Unauthorized("Invalid token.");
+
+            if (requestDto.StartDate.Date < DateTime.UtcNow.Date)
+                return BadRequest("Cannot apply for past dates.");
+
+            var leaveRequest = new LeaveRequest
+            {
+                EmployeeId = employeeId,
+                LeaveType = requestDto.LeaveType,
+                StartDate = requestDto.StartDate,
+                EndDate = requestDto.EndDate,
+                Reason = requestDto.Reason,
+                Status = LeaveStatus.Pending,
+                DateRequested = DateTime.UtcNow
+            };
+
+            await _leaveRequestRepo.AddLeaveRequestAsync(leaveRequest);
+            return Ok(new { message = "Leave request submitted." });
+        }
+
+        [HttpPost("approve/{id}")]
+        [Authorize(Roles = "Manager,Admin")]
+        public async Task<IActionResult> ApproveLeaveRequest(int id, [FromBody] bool isApproved)
+        {
+            var leaveRequest = await _leaveRequestRepo.GetLeaveRequestByIdAsync(id);
+            if (leaveRequest == null) return NotFound("Leave request not found.");
+
+            if (isApproved)
+            {
+                var balance = await _leaveBalanceRepo.GetLeaveBalanceAsync(leaveRequest.EmployeeId, leaveRequest.LeaveType);
+                var daysRequested = (leaveRequest.EndDate - leaveRequest.StartDate).Days + 1;
+
+                if (balance != null && balance.RemainingDays >= daysRequested)
+                {
+                    balance.RemainingDays -= daysRequested;
+                    leaveRequest.Status = LeaveStatus.Approved;
+
+                    await _leaveBalanceRepo.UpdateLeaveBalanceAsync(balance);
+                }
+                else
+                {
+                    return BadRequest("Insufficient leave balance.");
+                }
+            }
+            else
+            {
+                leaveRequest.Status = LeaveStatus.Rejected;
+            }
+
+            await _leaveRequestRepo.UpdateLeaveRequestAsync(leaveRequest);
+            return Ok(new { message = "Leave request updated." });
+        }
+
+        [HttpGet("employee")]
+        [Authorize(Roles = "Employee")]
+        public async Task<IActionResult> GetLeaveRequestsForEmployee()
+        {
+            var employeeId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(employeeId)) return Unauthorized();
+
+            var requests = await _leaveRequestRepo.GetLeaveRequestsByEmployeeIdAsync(employeeId);
+            return Ok(requests);
+        }
+
+        [HttpGet("manager/{managerId}")]
+        [Authorize(Roles = "Manager,Admin")]
+        public async Task<IActionResult> GetLeaveRequestsByManager(string managerId)
+        {
+            var requests = await _leaveRequestRepo.GetLeaveRequestsByManagerIdAsync(managerId);
+            return Ok(requests);
+        }
+    }
+using lmsapp.IRepo;
+using lmsapp.Repo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using System.Text;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add DB context
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Add Identity
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddDefaultTokenProviders();
+
+// Add JWT Authentication
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidAudience = builder.Configuration["Jwt:Issuer"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+    };
+});
+
+// Authorization
+builder.Services.AddAuthorization();
+
+// Add repositories
+builder.Services.AddScoped<ILeaveRequestRepository, LeaveRequestRepository>();
+builder.Services.AddScoped<ILeaveBalanceRepository, LeaveBalanceRepository>();
+
+// Add controllers
+builder.Services.AddControllers();
+
+// Swagger config with JWT
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "LMS API", Version = "v1" });
+
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter 'Bearer {token}'"
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
+
+var app = builder.Build();
+
+// Create roles
+using (var scope = app.Services.CreateScope())
+{
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+    var roles = new[] { "Employee", "Manager", "Admin" };
+
+    foreach (var role in roles)
+    {
+        if (!await roleManager.RoleExistsAsync(role))
+        {
+            await roleManager.CreateAsync(new IdentityRole(role));
+        }
+    }
+}
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+app.Run();
