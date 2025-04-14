@@ -4,22 +4,26 @@ using lmsapp.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using System.Threading.Tasks;
 
 namespace lmsapp.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Employee")] // Only employees can apply for leave
     public class LeaveRequestController : ControllerBase
     {
-        private readonly ILeaveRequestRepository _leaveRequestRepository;
+        private readonly ILeaveRequestRepository _leaveRequestRepo;
+        private readonly ILeaveBalanceRepository _leaveBalanceRepo;
 
-        public LeaveRequestController(ILeaveRequestRepository leaveRequestRepository)
+        public LeaveRequestController(ILeaveRequestRepository leaveRequestRepo, ILeaveBalanceRepository leaveBalanceRepo)
         {
-            _leaveRequestRepository = leaveRequestRepository;
+            _leaveRequestRepo = leaveRequestRepo;
+            _leaveBalanceRepo = leaveBalanceRepo;
         }
 
+        // Employee applies for leave
         [HttpPost("apply")]
+        [Authorize(Roles = "Employee")] // Only employees can apply for leave
         public async Task<IActionResult> ApplyForLeave([FromBody] CreateLeaveRequestDto requestDto)
         {
             // Get employee ID from token
@@ -43,13 +47,13 @@ namespace lmsapp.Controllers
                 DateRequested = DateTime.UtcNow
             };
 
-            await _leaveRequestRepository.AddLeaveRequestAsync(leaveRequest);
+            await _leaveRequestRepo.AddLeaveRequestAsync(leaveRequest);
             return Ok(new { message = "Leave request submitted successfully." });
         }
-    
 
         // Manager approves or rejects leave request
         [HttpPost("approve/{id}")]
+        [Authorize(Roles = "Manager, Admin")] // Only managers and admins can approve/reject
         public async Task<IActionResult> ApproveLeaveRequest(int id, [FromBody] bool isApproved)
         {
             var leaveRequest = await _leaveRequestRepo.GetLeaveRequestByIdAsync(id);
@@ -62,7 +66,7 @@ namespace lmsapp.Controllers
             {
                 // Approve leave and update leave balance
                 var leaveBalance = await _leaveBalanceRepo.GetLeaveBalanceAsync(leaveRequest.EmployeeId, leaveRequest.LeaveType);
-                if (leaveBalance != null && leaveBalance.RemainingDays > 0)
+                if (leaveBalance != null && leaveBalance.RemainingDays >= (leaveRequest.EndDate - leaveRequest.StartDate).Days)
                 {
                     leaveBalance.RemainingDays -= (leaveRequest.EndDate - leaveRequest.StartDate).Days;
                     await _leaveBalanceRepo.UpdateLeaveBalanceAsync(leaveBalance);
@@ -80,6 +84,28 @@ namespace lmsapp.Controllers
 
             await _leaveRequestRepo.UpdateLeaveRequestAsync(leaveRequest);
             return Ok(new { Message = "Leave request updated." });
+        }
+
+        // Manager views all leave requests
+        [HttpGet("manager/{managerId}")]
+        [Authorize(Roles = "Manager, Admin")] // Only managers and admins can view leave requests
+        public async Task<IActionResult> GetLeaveRequestsByManager(string managerId)
+        {
+            var leaveRequests = await _leaveRequestRepo.GetLeaveRequestsByManagerIdAsync(managerId);
+            return Ok(leaveRequests);
+        }
+
+        // Employee views their leave requests
+        [HttpGet("employee")]
+        [Authorize(Roles = "Employee")] // Only employees can view their own leave requests
+        public async Task<IActionResult> GetLeaveRequestsForEmployee()
+        {
+            var employeeId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(employeeId))
+                return Unauthorized("Invalid token: Employee ID not found.");
+
+            var leaveRequests = await _leaveRequestRepo.GetLeaveRequestsByEmployeeIdAsync(employeeId);
+            return Ok(leaveRequests);
         }
     }
 }
