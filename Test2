@@ -1,0 +1,273 @@
+To allow the user to log in using JWT and automatically associate their employee ID without having to input it manually, you can make the following changes:
+
+1. User Login with JWT Authentication: Allow employees to log in using their email and password, and return a JWT token upon successful authentication.
+
+
+2. Extract Employee ID from the Token: When a user logs in, extract their employee ID from the JWT token and use it for other operations like submitting leave requests.
+
+
+
+Step 1: Update the LoginModel and JWT Authentication Configuration
+
+You already have a LoginModel for login (email and password). Now, let’s create a Login endpoint where the employee will authenticate and receive a JWT token. This token will contain the employeeId that you can extract later.
+
+Modify LoginModel (if needed)
+
+public class LoginModel
+{
+    public string Email { get; set; }
+    public string Password { get; set; }
+}
+
+Step 2: Create a JWT Service
+
+We will implement a service that handles the generation and validation of JWT tokens.
+
+JWT Service:
+
+using System;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
+using lmsapp.Models;
+
+namespace lmsapp.Services
+{
+    public class JwtService
+    {
+        private readonly IConfiguration _configuration;
+        private readonly UserManager<ApplicationUser> _userManager;
+
+        public JwtService(IConfiguration configuration, UserManager<ApplicationUser> userManager)
+        {
+            _configuration = configuration;
+            _userManager = userManager;
+        }
+
+        public async Task<string> GenerateJwtTokenAsync(ApplicationUser user)
+        {
+            var claims = new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, user.Id), // User's Id (EmployeeId)
+                new Claim(ClaimTypes.Name, user.UserName), // User's email (or other identifier)
+                new Claim("EmployeeId", user.Id) // Include EmployeeId in JWT
+            };
+
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["Jwt:Issuer"],
+                audience: _configuration["Jwt:Issuer"],
+                claims: claims,
+                expires: DateTime.Now.AddHours(1),
+                signingCredentials: creds
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        public async Task<ApplicationUser> AuthenticateUserAsync(string email, string password)
+        {
+            var user = await _userManager.FindByEmailAsync(email);
+            if (user != null && await _userManager.CheckPasswordAsync(user, password))
+            {
+                return user;
+            }
+            return null;
+        }
+    }
+}
+
+Step 3: Create a Login Endpoint to Authenticate Users
+
+Now we will create an endpoint for login in your AuthController (or whatever controller you are using for authentication).
+
+AuthController for User Authentication:
+
+using Microsoft.AspNetCore.Mvc;
+using lmsapp.Models;
+using lmsapp.Services;
+using Microsoft.AspNetCore.Identity;
+
+namespace lmsapp.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class AuthController : ControllerBase
+    {
+        private readonly JwtService _jwtService;
+        private readonly UserManager<ApplicationUser> _userManager;
+
+        public AuthController(JwtService jwtService, UserManager<ApplicationUser> userManager)
+        {
+            _jwtService = jwtService;
+            _userManager = userManager;
+        }
+
+        [HttpPost("login")]
+        public async Task<IActionResult> Login([FromBody] LoginModel model)
+        {
+            var user = await _jwtService.AuthenticateUserAsync(model.Email, model.Password);
+            if (user == null)
+            {
+                return Unauthorized("Invalid email or password");
+            }
+
+            var token = await _jwtService.GenerateJwtTokenAsync(user);
+
+            return Ok(new { Token = token });
+        }
+    }
+}
+
+Step 4: Use JWT Token for Authorization
+
+Now we will set up authorization to ensure that only authenticated users can access protected routes. We’ll modify the LeaveRequestController to ensure it uses the JWT token for authorization, and extract the employee ID from the token.
+
+Modify LeaveRequestController to Use JWT and EmployeeId from the Token:
+
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using lmsapp.Models;
+using lmsapp.Dto;
+using lmsapp.IRepo;
+using System.Security.Claims;
+using System.Threading.Tasks;
+
+namespace lmsapp.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    [Authorize]
+    public class LeaveRequestController : ControllerBase
+    {
+        private readonly ILeaveRequestRepository _leaveRequestRepo;
+        private readonly ILeaveBalanceRepository _leaveBalanceRepo;
+
+        public LeaveRequestController(ILeaveRequestRepository leaveRequestRepo, ILeaveBalanceRepository leaveBalanceRepo)
+        {
+            _leaveRequestRepo = leaveRequestRepo;
+            _leaveBalanceRepo = leaveBalanceRepo;
+        }
+
+        // Employee applies for leave
+        [HttpPost("apply")]
+        public async Task<IActionResult> ApplyLeave([FromBody] CreateLeaveRequestDto model)
+        {
+            // Get EmployeeId from the JWT token (Claims)
+            var employeeId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+            if (employeeId == null)
+            {
+                return Unauthorized("User not authenticated");
+            }
+
+            var leaveRequest = new LeaveRequest
+            {
+                EmployeeId = employeeId,  // Use EmployeeId from token
+                LeaveType = model.LeaveType,
+                StartDate = model.StartDate,
+                EndDate = model.EndDate,
+                Reason = model.Reason,
+                DateRequested = DateTime.Now,
+                Status = LeaveStatus.Pending,
+                ManagerId = model.ManagerId
+            };
+
+            // Validate leave request dates
+            if (leaveRequest.StartDate < DateTime.Now || leaveRequest.EndDate < leaveRequest.StartDate)
+            {
+                return BadRequest("Invalid leave dates.");
+            }
+
+            // Check if employee has enough leave balance
+            var leaveBalance = await _leaveBalanceRepo.GetLeaveBalanceAsync(employeeId, model.LeaveType);
+            if (leaveBalance == null || leaveBalance.RemainingDays <= 0)
+            {
+                return BadRequest("Insufficient leave balance.");
+            }
+
+            await _leaveRequestRepo.AddLeaveRequestAsync(leaveRequest);
+            return Ok(new { Message = "Leave request submitted." });
+        }
+
+        // Manager approves or rejects leave request
+        [HttpPost("approve/{id}")]
+        public async Task<IActionResult> ApproveLeaveRequest(int id, [FromBody] bool isApproved)
+        {
+            var leaveRequest = await _leaveRequestRepo.GetLeaveRequestByIdAsync(id);
+            if (leaveRequest == null)
+            {
+                return NotFound("Leave request not found.");
+            }
+
+            if (isApproved)
+            {
+                // Approve leave and update leave balance
+                var leaveBalance = await _leaveBalanceRepo.GetLeaveBalanceAsync(leaveRequest.EmployeeId, leaveRequest.LeaveType);
+                if (leaveBalance != null && leaveBalance.RemainingDays > 0)
+                {
+                    leaveBalance.RemainingDays -= (leaveRequest.EndDate - leaveRequest.StartDate).Days;
+                    await _leaveBalanceRepo.UpdateLeaveBalanceAsync(leaveBalance);
+                    leaveRequest.Status = LeaveStatus.Approved;
+                }
+                else
+                {
+                    return BadRequest("Insufficient leave balance.");
+                }
+            }
+            else
+            {
+                leaveRequest.Status = LeaveStatus.Rejected;
+            }
+
+            await _leaveRequestRepo.UpdateLeaveRequestAsync(leaveRequest);
+            return Ok(new { Message = "Leave request updated." });
+        }
+    }
+}
+
+Step 5: Configure JWT Authentication in Startup/Program
+
+Ensure JWT authentication is configured correctly in your Program.cs or Startup.cs to enable authentication using JWT tokens.
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Issuer"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+Step 6: Test the Application
+
+Login: Post to /api/auth/login with email and password to receive a JWT token.
+
+Apply Leave: Post to /api/leaverequest/apply with the leave details, and the EmployeeId will automatically be extracted from the JWT token.
+
+
+Summary
+
+1. JWT Authentication: Employee logs in with email and password to receive a JWT token.
+
+
+2. EmployeeId from JWT: The EmployeeId is stored as a claim in the JWT token and is automatically available for the employee when making requests (no need for employees to provide it manually).
+
+
+3. Authorization: We used the [Authorize] attribute to protect the endpoints, ensuring that only authenticated users can apply for leave.
+
+
+
+With this setup, employees only need to log in once, and the EmployeeId is automatically available in subsequent requests through the JWT token.

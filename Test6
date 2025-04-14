@@ -1,0 +1,74 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using lmsapp.Models;
+using lmsapp.Dto;
+using System.Security.Claims;
+
+namespace lmsapp.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class LeaveRequestController : ControllerBase
+    {
+        private readonly ILeaveRepository _leaveRepo;
+
+        public LeaveRequestController(ILeaveRepository leaveRepo)
+        {
+            _leaveRepo = leaveRepo;
+        }
+
+        // Only Employee can apply for leave
+        [HttpPost("apply")]
+        [Authorize(Roles = "Employee")]
+        public async Task<IActionResult> ApplyLeave([FromBody] CreateLeaveRequestDto request)
+        {
+            var employeeId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (request.StartDate < DateTime.UtcNow.Date)
+                return BadRequest("Cannot apply for past dates.");
+
+            var result = await _leaveRepo.ApplyLeaveAsync(employeeId, request);
+
+            return result ? Ok("Leave request submitted.") : StatusCode(500, "Failed to submit leave.");
+        }
+
+        // Only Manager can approve/reject
+        [HttpPost("approve/{requestId}")]
+        [Authorize(Roles = "Manager")]
+        public async Task<IActionResult> ApproveLeave(int requestId)
+        {
+            var managerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var result = await _leaveRepo.ApproveLeaveAsync(requestId, managerId);
+
+            return result ? Ok("Leave approved.") : BadRequest("Approval failed.");
+        }
+
+        [HttpPost("reject/{requestId}")]
+        [Authorize(Roles = "Manager")]
+        public async Task<IActionResult> RejectLeave(int requestId)
+        {
+            var managerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var result = await _leaveRepo.RejectLeaveAsync(requestId, managerId);
+
+            return result ? Ok("Leave rejected.") : BadRequest("Rejection failed.");
+        }
+
+        // Employee can see own leave history
+        [HttpGet("history")]
+        [Authorize(Roles = "Employee")]
+        public async Task<IActionResult> GetLeaveHistory()
+        {
+            var employeeId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var history = await _leaveRepo.GetLeaveHistoryAsync(employeeId);
+            return Ok(history);
+        }
+
+        // Manager can view leave requests
+        [HttpGet("pending")]
+        [Authorize(Roles = "Manager")]
+        public async Task<IActionResult> GetPendingRequests()
+        {
+            var requests = await _leaveRepo.GetPendingLeaveRequestsAsync();
+            return Ok(requests);
+        }
+    }
