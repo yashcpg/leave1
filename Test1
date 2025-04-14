@@ -1,0 +1,270 @@
+To implement the Repository Pattern in your application, we’ll separate the data access logic into a dedicated repository class and move the database interaction code from the controller to the repository. The repository pattern allows us to follow the Single Responsibility Principle and makes it easier to unit test and maintain the application.
+
+Steps to implement the Repository Pattern:
+
+1. Create Repositories: Create repositories for different entities like LeaveRequest, LeaveBalance, etc.
+
+
+2. Interface Definition: Define interfaces for the repository classes.
+
+
+3. Implement Repository Classes: Implement the repository classes that interact with the database.
+
+
+4. Use Dependency Injection: Use the repository in controllers through dependency injection.
+
+
+
+Step 1: Define Repository Interfaces
+
+Let's define an interface for the LeaveRequest repository and another for LeaveBalance.
+
+ILeaveRequestRepository Interface:
+
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using lmsapp.Models;
+
+namespace lmsapp.IRepo
+{
+    public interface ILeaveRequestRepository
+    {
+        Task<LeaveRequest> GetLeaveRequestByIdAsync(int id);
+        Task<IEnumerable<LeaveRequest>> GetLeaveRequestsByEmployeeIdAsync(string employeeId);
+        Task<IEnumerable<LeaveRequest>> GetLeaveRequestsByManagerIdAsync(string managerId);
+        Task AddLeaveRequestAsync(LeaveRequest leaveRequest);
+        Task UpdateLeaveRequestAsync(LeaveRequest leaveRequest);
+    }
+}
+
+ILeaveBalanceRepository Interface:
+
+using System.Threading.Tasks;
+using lmsapp.Models;
+
+namespace lmsapp.IRepo
+{
+    public interface ILeaveBalanceRepository
+    {
+        Task<LeaveBalance> GetLeaveBalanceAsync(string employeeId, LeaveType leaveType);
+        Task UpdateLeaveBalanceAsync(LeaveBalance leaveBalance);
+    }
+}
+
+Step 2: Implement Repository Classes
+
+Now we will implement these repositories.
+
+LeaveRequestRepository Implementation:
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using lmsapp.Models;
+using lmsapp.IRepo;
+
+namespace lmsapp.Repo
+{
+    public class LeaveRequestRepository : ILeaveRequestRepository
+    {
+        private readonly ApplicationDbContext _context;
+
+        public LeaveRequestRepository(ApplicationDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<LeaveRequest> GetLeaveRequestByIdAsync(int id)
+        {
+            return await _context.LeaveRequests
+                .FirstOrDefaultAsync(lr => lr.Id == id);
+        }
+
+        public async Task<IEnumerable<LeaveRequest>> GetLeaveRequestsByEmployeeIdAsync(string employeeId)
+        {
+            return await _context.LeaveRequests
+                .Where(lr => lr.EmployeeId == employeeId)
+                .ToListAsync();
+        }
+
+        public async Task<IEnumerable<LeaveRequest>> GetLeaveRequestsByManagerIdAsync(string managerId)
+        {
+            return await _context.LeaveRequests
+                .Where(lr => lr.ManagerId == managerId)
+                .ToListAsync();
+        }
+
+        public async Task AddLeaveRequestAsync(LeaveRequest leaveRequest)
+        {
+            await _context.LeaveRequests.AddAsync(leaveRequest);
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task UpdateLeaveRequestAsync(LeaveRequest leaveRequest)
+        {
+            _context.LeaveRequests.Update(leaveRequest);
+            await _context.SaveChangesAsync();
+        }
+    }
+}
+
+LeaveBalanceRepository Implementation:
+
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using lmsapp.Models;
+using lmsapp.IRepo;
+
+namespace lmsapp.Repo
+{
+    public class LeaveBalanceRepository : ILeaveBalanceRepository
+    {
+        private readonly ApplicationDbContext _context;
+
+        public LeaveBalanceRepository(ApplicationDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<LeaveBalance> GetLeaveBalanceAsync(string employeeId, LeaveType leaveType)
+        {
+            return await _context.LeaveBalances
+                .FirstOrDefaultAsync(lb => lb.EmployeeId == employeeId && lb.LeaveType == leaveType);
+        }
+
+        public async Task UpdateLeaveBalanceAsync(LeaveBalance leaveBalance)
+        {
+            _context.LeaveBalances.Update(leaveBalance);
+            await _context.SaveChangesAsync();
+        }
+    }
+}
+
+Step 3: Modify the Controller to Use the Repositories
+
+Now, instead of directly interacting with the ApplicationDbContext, the controller will use the repository interfaces to perform the necessary operations.
+
+Updated LeaveRequestController:
+
+using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
+using lmsapp.Models;
+using lmsapp.Dto;
+using lmsapp.IRepo;
+
+namespace lmsapp.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class LeaveRequestController : ControllerBase
+    {
+        private readonly ILeaveRequestRepository _leaveRequestRepo;
+        private readonly ILeaveBalanceRepository _leaveBalanceRepo;
+
+        public LeaveRequestController(ILeaveRequestRepository leaveRequestRepo, ILeaveBalanceRepository leaveBalanceRepo)
+        {
+            _leaveRequestRepo = leaveRequestRepo;
+            _leaveBalanceRepo = leaveBalanceRepo;
+        }
+
+        // Employee applies for leave
+        [HttpPost("apply")]
+        public async Task<IActionResult> ApplyLeave([FromBody] CreateLeaveRequestDto model)
+        {
+            var leaveRequest = new LeaveRequest
+            {
+                EmployeeId = model.EmployeeId,
+                LeaveType = model.LeaveType,
+                StartDate = model.StartDate,
+                EndDate = model.EndDate,
+                Reason = model.Reason,
+                DateRequested = DateTime.Now,
+                Status = LeaveStatus.Pending,  // Set default status to Pending
+                ManagerId = model.ManagerId
+            };
+
+            // Validate leave request dates
+            if (leaveRequest.StartDate < DateTime.Now || leaveRequest.EndDate < leaveRequest.StartDate)
+            {
+                return BadRequest("Invalid leave dates.");
+            }
+
+            // Check if employee has enough leave balance
+            var leaveBalance = await _leaveBalanceRepo.GetLeaveBalanceAsync(model.EmployeeId, model.LeaveType);
+            if (leaveBalance == null || leaveBalance.RemainingDays <= 0)
+            {
+                return BadRequest("Insufficient leave balance.");
+            }
+
+            await _leaveRequestRepo.AddLeaveRequestAsync(leaveRequest);
+            return Ok(new { Message = "Leave request submitted." });
+        }
+
+        // Manager approves or rejects leave request
+        [HttpPost("approve/{id}")]
+        public async Task<IActionResult> ApproveLeaveRequest(int id, [FromBody] bool isApproved)
+        {
+            var leaveRequest = await _leaveRequestRepo.GetLeaveRequestByIdAsync(id);
+            if (leaveRequest == null)
+            {
+                return NotFound("Leave request not found.");
+            }
+
+            if (isApproved)
+            {
+                // Approve leave and update leave balance
+                var leaveBalance = await _leaveBalanceRepo.GetLeaveBalanceAsync(leaveRequest.EmployeeId, leaveRequest.LeaveType);
+                if (leaveBalance != null && leaveBalance.RemainingDays > 0)
+                {
+                    leaveBalance.RemainingDays -= (leaveRequest.EndDate - leaveRequest.StartDate).Days;
+                    await _leaveBalanceRepo.UpdateLeaveBalanceAsync(leaveBalance);
+                    leaveRequest.Status = LeaveStatus.Approved;
+                }
+                else
+                {
+                    return BadRequest("Insufficient leave balance.");
+                }
+            }
+            else
+            {
+                leaveRequest.Status = LeaveStatus.Rejected;
+            }
+
+            await _leaveRequestRepo.UpdateLeaveRequestAsync(leaveRequest);
+            return Ok(new { Message = "Leave request updated." });
+        }
+    }
+}
+
+Step 4: Register Repositories in Dependency Injection
+
+In Program.cs or Startup.cs, register the repositories in the dependency injection container.
+
+builder.Services.AddScoped<ILeaveRequestRepository, LeaveRequestRepository>();
+builder.Services.AddScoped<ILeaveBalanceRepository, LeaveBalanceRepository>();
+
+Step 5: Test the Application
+
+After making these changes, you should be able to use the repository pattern in your application. The main benefits of using the Repository Pattern are:
+
+It abstracts the data access layer from the controller.
+
+It allows for easier unit testing because you can mock the repository interfaces.
+
+It keeps your controller clean and focused on business logic.
+
+
+
+---
+
+Summary of Key Changes:
+
+Repository Interfaces: Created ILeaveRequestRepository and ILeaveBalanceRepository.
+
+Repository Implementations: Implemented repository classes to handle data access logic.
+
+Controller Updates: Updated the LeaveRequestController to use the repositories instead of directly interacting with the DbContext.
+
+
+This structure will keep your application well-organized and maintainable.
