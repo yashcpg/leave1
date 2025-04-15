@@ -1,0 +1,197 @@
+Great! Let's implement the Admin Panel using the Repository Pattern. This ensures your application remains modular, testable, and follows clean architecture principles.
+
+
+---
+
+What We’ll Cover
+
+Admin repository interface & implementation
+
+Admin controller using the repo
+
+Extendable structure
+
+
+
+---
+
+1. Create Interface IAdminRepository.cs
+
+using lmsapp.Models;
+using Microsoft.AspNetCore.Identity;
+
+namespace lmsapp.IRepo
+{
+    public interface IAdminRepository
+    {
+        Task<IEnumerable<ApplicationUser>> GetAllUsersAsync();
+        Task<ApplicationUser?> GetUserByIdAsync(string userId);
+        Task<IList<string>> GetUserRolesAsync(ApplicationUser user);
+        Task<bool> UpdateUserRoleAsync(ApplicationUser user, string newRole);
+        Task<bool> DeleteUserAsync(ApplicationUser user);
+        IEnumerable<string> GetAllLeaveTypes();
+        IEnumerable<LeaveRequest> GetAllLeaveRequests();
+    }
+}
+
+
+---
+
+2. Create Implementation AdminRepository.cs
+
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+
+namespace lmsapp.Repo
+{
+    public class AdminRepository : IAdminRepository
+    {
+        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly ApplicationDbContext _context;
+
+        public AdminRepository(
+            UserManager<ApplicationUser> userManager,
+            RoleManager<IdentityRole> roleManager,
+            ApplicationDbContext context)
+        {
+            _userManager = userManager;
+            _roleManager = roleManager;
+            _context = context;
+        }
+
+        public async Task<IEnumerable<ApplicationUser>> GetAllUsersAsync()
+        {
+            return await _userManager.Users.ToListAsync();
+        }
+
+        public async Task<ApplicationUser?> GetUserByIdAsync(string userId)
+        {
+            return await _userManager.FindByIdAsync(userId);
+        }
+
+        public async Task<IList<string>> GetUserRolesAsync(ApplicationUser user)
+        {
+            return await _userManager.GetRolesAsync(user);
+        }
+
+        public async Task<bool> UpdateUserRoleAsync(ApplicationUser user, string newRole)
+        {
+            var currentRoles = await _userManager.GetRolesAsync(user);
+            var removeResult = await _userManager.RemoveFromRolesAsync(user, currentRoles);
+
+            if (!await _roleManager.RoleExistsAsync(newRole))
+                await _roleManager.CreateAsync(new IdentityRole(newRole));
+
+            var addResult = await _userManager.AddToRoleAsync(user, newRole);
+
+            return removeResult.Succeeded && addResult.Succeeded;
+        }
+
+        public async Task<bool> DeleteUserAsync(ApplicationUser user)
+        {
+            var result = await _userManager.DeleteAsync(user);
+            return result.Succeeded;
+        }
+
+        public IEnumerable<string> GetAllLeaveTypes()
+        {
+            return Enum.GetNames(typeof(LeaveType));
+        }
+
+        public IEnumerable<LeaveRequest> GetAllLeaveRequests()
+        {
+            return _context.LeaveRequests.ToList();
+        }
+    }
+}
+
+
+---
+
+3. Register Repository in Program.cs
+
+builder.Services.AddScoped<IAdminRepository, AdminRepository>();
+
+
+---
+
+4. Admin Controller Using Repository
+
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace lmsapp.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    [Authorize(Roles = "Admin")]
+    public class AdminController : ControllerBase
+    {
+        private readonly IAdminRepository _adminRepo;
+
+        public AdminController(IAdminRepository adminRepo)
+        {
+            _adminRepo = adminRepo;
+        }
+
+        [HttpGet("users")]
+        public async Task<IActionResult> GetUsers()
+        {
+            var users = await _adminRepo.GetAllUsersAsync();
+            return Ok(users.Select(u => new { u.Id, u.UserName, u.Email }));
+        }
+
+        [HttpPut("user-role")]
+        public async Task<IActionResult> UpdateUserRole(string userId, string newRole)
+        {
+            var user = await _adminRepo.GetUserByIdAsync(userId);
+            if (user == null) return NotFound("User not found");
+
+            var result = await _adminRepo.UpdateUserRoleAsync(user, newRole);
+            return result ? Ok("Role updated.") : BadRequest("Failed to update role.");
+        }
+
+        [HttpDelete("delete-user/{userId}")]
+        public async Task<IActionResult> DeleteUser(string userId)
+        {
+            var user = await _adminRepo.GetUserByIdAsync(userId);
+            if (user == null) return NotFound("User not found");
+
+            var result = await _adminRepo.DeleteUserAsync(user);
+            return result ? Ok("User deleted.") : BadRequest("Delete failed.");
+        }
+
+        [HttpGet("leave-types")]
+        public IActionResult GetLeaveTypes()
+        {
+            var types = _adminRepo.GetAllLeaveTypes();
+            return Ok(types);
+        }
+
+        [HttpGet("leave-requests")]
+        public IActionResult GetAllLeaveRequests()
+        {
+            var requests = _adminRepo.GetAllLeaveRequests();
+            return Ok(requests);
+        }
+    }
+}
+
+
+---
+
+Would you like to add:
+
+DTOs to clean up responses?
+
+A separate service layer?
+
+Admin UI in React or Razor Pages?
+
+
+Let me know and I’ll continue from here.
