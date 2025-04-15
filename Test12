@@ -1,0 +1,193 @@
+Great! Here's how to refactor the AdminPanel logic using the Repository Pattern for managing:
+
+Users
+
+Roles
+
+Leave Types
+
+System Settings
+
+
+
+---
+
+1. Create Interfaces
+
+IUserRepository.cs
+
+using lmsapp.Models;
+
+namespace lmsapp.IRepo
+{
+    public interface IUserRepository
+    {
+        Task<IEnumerable<ApplicationUser>> GetAllUsersAsync();
+        Task<ApplicationUser> GetUserByEmailAsync(string email);
+        Task<bool> AssignRoleAsync(ApplicationUser user, string role);
+    }
+}
+
+ISystemSettingRepository.cs
+
+namespace lmsapp.IRepo
+{
+    public interface ISystemSettingRepository
+    {
+        Task<bool> UpdateSettingAsync(string key, string value);
+    }
+}
+
+
+---
+
+2. Implement Repositories
+
+UserRepository.cs
+
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Identity;
+
+namespace lmsapp.Repo
+{
+    public class UserRepository : IUserRepository
+    {
+        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly RoleManager<IdentityRole> _roleManager;
+
+        public UserRepository(UserManager<ApplicationUser> userManager, RoleManager<IdentityRole> roleManager)
+        {
+            _userManager = userManager;
+            _roleManager = roleManager;
+        }
+
+        public async Task<IEnumerable<ApplicationUser>> GetAllUsersAsync()
+        {
+            return _userManager.Users.ToList();
+        }
+
+        public async Task<ApplicationUser> GetUserByEmailAsync(string email)
+        {
+            return await _userManager.FindByEmailAsync(email);
+        }
+
+        public async Task<bool> AssignRoleAsync(ApplicationUser user, string role)
+        {
+            if (!await _roleManager.RoleExistsAsync(role))
+                return false;
+
+            var result = await _userManager.AddToRoleAsync(user, role);
+            return result.Succeeded;
+        }
+    }
+}
+
+SystemSettingRepository.cs (Stub)
+
+using lmsapp.IRepo;
+
+namespace lmsapp.Repo
+{
+    public class SystemSettingRepository : ISystemSettingRepository
+    {
+        private readonly Dictionary<string, string> _settings = new();
+
+        public Task<bool> UpdateSettingAsync(string key, string value)
+        {
+            _settings[key] = value;
+            return Task.FromResult(true);
+        }
+    }
+}
+
+
+---
+
+3. Update AdminController
+
+AdminController.cs
+
+using lmsapp.Dto;
+using lmsapp.IRepo;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace lmsapp.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    [Authorize(Roles = "Admin")]
+    public class AdminController : ControllerBase
+    {
+        private readonly IUserRepository _userRepo;
+        private readonly ISystemSettingRepository _settingRepo;
+
+        public AdminController(IUserRepository userRepo, ISystemSettingRepository settingRepo)
+        {
+            _userRepo = userRepo;
+            _settingRepo = settingRepo;
+        }
+
+        [HttpGet("users")]
+        public async Task<IActionResult> GetAllUsers()
+        {
+            var users = await _userRepo.GetAllUsersAsync();
+            return Ok(users);
+        }
+
+        [HttpPost("assign-role")]
+        public async Task<IActionResult> AssignRole([FromBody] RoleAssignDto dto)
+        {
+            var user = await _userRepo.GetUserByEmailAsync(dto.Email);
+            if (user == null)
+                return NotFound("User not found.");
+
+            var result = await _userRepo.AssignRoleAsync(user, dto.Role);
+            if (!result)
+                return BadRequest("Role assignment failed.");
+
+            return Ok("Role assigned.");
+        }
+
+        [HttpPost("system-setting")]
+        public async Task<IActionResult> UpdateSetting([FromBody] SystemSettingDto dto)
+        {
+            var success = await _settingRepo.UpdateSettingAsync(dto.Key, dto.Value);
+            return success ? Ok("Setting updated.") : BadRequest("Failed to update setting.");
+        }
+    }
+}
+
+
+---
+
+4. DTOs
+
+namespace lmsapp.Dto
+{
+    public class RoleAssignDto
+    {
+        public string Email { get; set; }
+        public string Role { get; set; }
+    }
+
+    public class SystemSettingDto
+    {
+        public string Key { get; set; }
+        public string Value { get; set; }
+    }
+}
+
+
+---
+
+5. Register in Program.cs
+
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<ISystemSettingRepository, SystemSettingRepository>();
+
+
+---
+
+Would you like to also store leave types and settings in a database with migrations or continue with in-memory for now?
