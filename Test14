@@ -1,0 +1,198 @@
+Perfect! Let's extend your Admin Panel so that Admins can create and manage leave types dynamically instead of relying on predefined enums.
+
+
+---
+
+Step-by-Step Plan
+
+1. Create a LeaveType model (instead of enum-based)
+
+
+2. Add repository interface & implementation for leave types
+
+
+3. Add controller endpoints to create, read, update, delete (CRUD) leave types
+
+
+4. Register everything in Program.cs
+
+
+
+
+---
+
+1. Model: LeaveType.cs
+
+namespace lmsapp.Models
+{
+    public class LeaveType
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int DefaultDays { get; set; }
+    }
+}
+
+
+---
+
+2. Add to ApplicationDbContext.cs
+
+public DbSet<LeaveType> LeaveTypes { get; set; }
+
+Run a migration:
+
+dotnet ef migrations add AddLeaveTypeEntity
+dotnet ef database update
+
+
+---
+
+3. Repository Interface: ILeaveTypeRepository.cs
+
+using lmsapp.Models;
+
+namespace lmsapp.IRepo
+{
+    public interface ILeaveTypeRepository
+    {
+        Task<IEnumerable<LeaveType>> GetAllAsync();
+        Task<LeaveType?> GetByIdAsync(int id);
+        Task AddAsync(LeaveType leaveType);
+        Task UpdateAsync(LeaveType leaveType);
+        Task DeleteAsync(int id);
+    }
+}
+
+
+---
+
+4. Repository Implementation: LeaveTypeRepository.cs
+
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace lmsapp.Repo
+{
+    public class LeaveTypeRepository : ILeaveTypeRepository
+    {
+        private readonly ApplicationDbContext _context;
+
+        public LeaveTypeRepository(ApplicationDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<IEnumerable<LeaveType>> GetAllAsync() =>
+            await _context.LeaveTypes.ToListAsync();
+
+        public async Task<LeaveType?> GetByIdAsync(int id) =>
+            await _context.LeaveTypes.FindAsync(id);
+
+        public async Task AddAsync(LeaveType leaveType)
+        {
+            _context.LeaveTypes.Add(leaveType);
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task UpdateAsync(LeaveType leaveType)
+        {
+            _context.LeaveTypes.Update(leaveType);
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task DeleteAsync(int id)
+        {
+            var leaveType = await _context.LeaveTypes.FindAsync(id);
+            if (leaveType != null)
+            {
+                _context.LeaveTypes.Remove(leaveType);
+                await _context.SaveChangesAsync();
+            }
+        }
+    }
+}
+
+
+---
+
+5. Register in Program.cs
+
+builder.Services.AddScoped<ILeaveTypeRepository, LeaveTypeRepository>();
+
+
+---
+
+6. Admin Controller - Add Endpoints
+
+Update or create AdminLeaveTypeController.cs:
+
+using lmsapp.IRepo;
+using lmsapp.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace lmsapp.Controllers
+{
+    [Route("api/admin/leave-types")]
+    [ApiController]
+    [Authorize(Roles = "Admin")]
+    public class AdminLeaveTypeController : ControllerBase
+    {
+        private readonly ILeaveTypeRepository _leaveTypeRepo;
+
+        public AdminLeaveTypeController(ILeaveTypeRepository leaveTypeRepo)
+        {
+            _leaveTypeRepo = leaveTypeRepo;
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetAll()
+        {
+            var types = await _leaveTypeRepo.GetAllAsync();
+            return Ok(types);
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Create(LeaveType model)
+        {
+            await _leaveTypeRepo.AddAsync(model);
+            return Ok(new { message = "Leave type created." });
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> Update(int id, LeaveType model)
+        {
+            var existing = await _leaveTypeRepo.GetByIdAsync(id);
+            if (existing == null) return NotFound();
+
+            existing.Name = model.Name;
+            existing.DefaultDays = model.DefaultDays;
+            await _leaveTypeRepo.UpdateAsync(existing);
+
+            return Ok(new { message = "Leave type updated." });
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> Delete(int id)
+        {
+            await _leaveTypeRepo.DeleteAsync(id);
+            return Ok(new { message = "Leave type deleted." });
+        }
+    }
+}
+
+
+---
+
+Would you like to:
+
+Tie leave types to employee balances automatically?
+
+Add UI for managing this (React, Blazor, etc)?
+
+Seed default leave types initially?
+
+
+Let me know and I’ll guide the next part!
